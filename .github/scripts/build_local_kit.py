@@ -105,15 +105,24 @@ def main():
     for name, value in plist_settings.get('default', {}).items():
         merged[name] = host.get(name, value)
     overrides.write_bytes(plistlib.dumps(merged))
-    output = out/f'spoti.pw-{manifest["version"]}-spotify-{host["CFBundleShortVersionString"]}-local-patch-v3.ipa'
+    variant = manifest.get('variant', 'local-patch-v3')
+    output = out/f'spoti.pw-{manifest["version"]}-spotify-{host["CFBundleShortVersionString"]}-{variant}.ipa'
     inputs = [kit/'files/Frameworks/SpotifyGlassAppGroups.dylib',
               kit/'files/Frameworks/spotifyglass.dylib',
               kit/'files/PlugIns/SpotifyGlassLiveActivity.appex']
+    inputs.extend(kit/'files'/name for name in manifest.get('addons', []))
     run('cyan', '-i', ipa, '-o', output, '-f', *inputs, '-l', overrides, '-w', '-s', '--overwrite')
     staging = work/'staging'
     with zipfile.ZipFile(output) as archive:
         archive.extractall(staging)
     app = staging/'Payload'/apps[0]
+    for name in manifest.get('restoreFrameworks', []):
+        target = app/'Frameworks'/name
+        shutil.copytree(kit/'files/Frameworks'/name, target, dirs_exist_ok=True)
+        run('ldid', '-S', target/name.removesuffix('.framework'))
+    for name in manifest.get('addons', []):
+        if not (app/name).exists():
+            raise ValueError('Missing addon: '+name)
     for name in manifest.get('remove', []):
         path = app/name
         if path.is_dir():
@@ -167,6 +176,7 @@ def main():
                'live_activity_included': True, 'widget_patched': widget.exists(),
                'app_intents_added': len(additions['actions']), 'patch_preserved': True,
                'patch_variant': 'v3', 'full_text_preserved': True,
+               'addons_included': manifest.get('addons', []),
                'ipa_sha256': hashlib.sha256(result).hexdigest(), 'ipa_size': len(result),
                'signing': 'fakesigned; ordinary sideloading requires signing with an installation certificate',
                'runtime_tested_on_ios': False}
