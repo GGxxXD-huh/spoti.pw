@@ -105,7 +105,7 @@ def main():
     for name, value in plist_settings.get('default', {}).items():
         merged[name] = host.get(name, value)
     overrides.write_bytes(plistlib.dumps(merged))
-    output = out/f'spoti.pw-{manifest["version"]}-spotify-{host["CFBundleShortVersionString"]}-local-patch-v2.ipa'
+    output = out/f'spoti.pw-{manifest["version"]}-spotify-{host["CFBundleShortVersionString"]}-local-patch-v3.ipa'
     inputs = [kit/'files/Frameworks/SpotifyGlassAppGroups.dylib',
               kit/'files/Frameworks/spotifyglass.dylib',
               kit/'files/PlugIns/SpotifyGlassLiveActivity.appex']
@@ -166,7 +166,7 @@ def main():
                'main_cryptid': encryption, 'main_loads_verified': manifest['load'][0]['dylibs'],
                'live_activity_included': True, 'widget_patched': widget.exists(),
                'app_intents_added': len(additions['actions']), 'patch_preserved': True,
-               'patch_variant': 'v2', 'full_text_preserved': True,
+               'patch_variant': 'v3', 'full_text_preserved': True,
                'ipa_sha256': hashlib.sha256(result).hexdigest(), 'ipa_size': len(result),
                'signing': 'fakesigned; ordinary sideloading requires signing with an installation certificate',
                'runtime_tested_on_ios': False}
