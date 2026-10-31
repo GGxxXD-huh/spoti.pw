@@ -55,9 +55,14 @@ static NSString *TrackID(id track, NSDictionary *info) {
 static NSArray *CachedLyrics(NSString *trackID) {
     if (!trackID) return @[];
     NSString *base = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *path = [[base stringByAppendingPathComponent:@"spoti.pw/SpotifyLyrics"]
-        stringByAppendingPathComponent:[trackID stringByAppendingPathExtension:@"json"]];
-    NSData *data = [NSData dataWithContentsOfFile:path];
+    NSData *data = nil;
+    for (NSString *folder in @[@"spoti.pw/Lyrics", @"spoti.pw/SpotifyLyrics"]) {
+        NSString *path = [[base stringByAppendingPathComponent:folder]
+            stringByAppendingPathComponent:[trackID stringByAppendingPathExtension:@"json"]];
+        data = [NSData dataWithContentsOfFile:path];
+        if (data.length > 0 && data.length <= 2*1024*1024) break;
+        data = nil;
+    }
     if (!data || data.length > 2*1024*1024) return @[];
     id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     NSArray *lines = [root isKindOfClass:NSDictionary.class] ? root[@"ln"] : nil;
