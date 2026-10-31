@@ -207,6 +207,7 @@ static NSString *WifiAddress(void) {
 }
 
 static void ShowLink(int attempts) {
+    if (![NSUserDefaults.standardUserDefaults boolForKey:@"spotifyglass.webPlayer"]) return;
     NSString *address=WifiAddress();
     if (!address) return;
     UIViewController *root=nil;
@@ -228,6 +229,32 @@ static void ShowLink(int attempts) {
     [root presentViewController:alert animated:YES completion:nil];
 }
 
+// All listener lifecycle changes run on the main queue. The Chroma toggle is
+// the single source of truth; cancellation closes the listening socket.
+static void RefreshLocalWeb(void) {
+    BOOL enabled = [NSUserDefaults.standardUserDefaults boolForKey:@"spotifyglass.webPlayer"];
+    if (!enabled) {
+        if (listener) { dispatch_source_cancel(listener); listener = nil; }
+        return;
+    }
+    if (listener) return;
+    int fd=socket(AF_INET,SOCK_STREAM,0);
+    if (fd<0) { NSLog(@"[chroma-local] socket failed"); return; }
+    int reuse=1; setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
+    struct sockaddr_in addr={0}; addr.sin_len=sizeof(addr); addr.sin_family=AF_INET;
+    addr.sin_port=htons(kPort); addr.sin_addr.s_addr=htonl(INADDR_ANY);
+    if (bind(fd,(struct sockaddr *)&addr,sizeof(addr))<0 || listen(fd,8)<0) {
+        close(fd); NSLog(@"[chroma-local] could not listen on port %u",kPort);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{ RefreshLocalWeb(); });
+        return;
+    }
+    dispatch_queue_t q=dispatch_queue_create("pw.chroma.localweb",DISPATCH_QUEUE_SERIAL);
+    listener=dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,fd,0,q);
+    dispatch_source_set_event_handler(listener,^{ int client=accept(fd,NULL,NULL); if(client>=0)dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{LocalWebHandle(client);}); });
+    dispatch_source_set_cancel_handler(listener,^{close(fd);}); dispatch_resume(listener);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,8*NSEC_PER_SEC),dispatch_get_main_queue(),^{ShowLink(5);});
+}
+
 __attribute__((constructor)) static void StartLocalWeb(void) {
     @autoreleasepool {
         NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
@@ -235,24 +262,17 @@ __attribute__((constructor)) static void StartLocalWeb(void) {
         if (saved.length != 32) {
             unsigned char bytes[16]; if (SecRandomCopyBytes(kSecRandomDefault,sizeof(bytes),bytes)!=errSecSuccess) return;
             NSMutableString *hex=[NSMutableString stringWithCapacity:32]; for (int i=0;i<16;i++) [hex appendFormat:@"%02x",bytes[i]];
-            saved=hex;[defaults setObject:saved forKey:kTokenKey];
+            saved=hex; [defaults setObject:saved forKey:kTokenKey];
         }
         token=[saved copy];
-        int fd=socket(AF_INET,SOCK_STREAM,0); if(fd<0)return;
-        int enabled=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&enabled,sizeof(enabled));
-        struct sockaddr_in addr={0};addr.sin_len=sizeof(addr);addr.sin_family=AF_INET;addr.sin_port=htons(kPort);addr.sin_addr.s_addr=htonl(INADDR_ANY);
-        if(bind(fd,(struct sockaddr *)&addr,sizeof(addr))<0 || listen(fd,8)<0){
-            close(fd); NSLog(@"[chroma-local] could not listen on port %u",kPort); return;
-        }
-        dispatch_queue_t q=dispatch_queue_create("pw.chroma.localweb",DISPATCH_QUEUE_SERIAL);
-        listener=dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,fd,0,q);
-        dispatch_source_set_event_handler(listener,^{ int client=accept(fd,NULL,NULL);if(client>=0)dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{LocalWebHandle(client);}); });
-        dispatch_source_set_cancel_handler(listener,^{close(fd);});dispatch_resume(listener);
         dispatch_async(dispatch_get_main_queue(),^{
             Class cls=NSClassFromString(@"SPTEsperantoPlayer"); SEL selector=NSSelectorFromString(@"state");
             Method method=class_getInstanceMethod(cls,selector);
             if(method){originalState=(id(*)(id,SEL))method_getImplementation(method);class_replaceMethod(cls,selector,(IMP)CaptureState,method_getTypeEncoding(method));}
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,8*NSEC_PER_SEC),dispatch_get_main_queue(),^{ShowLink(5);});
+            NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
+            [center addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){RefreshLocalWeb();}];
+            [center addObserverForName:@"SGWebPlayerDidChangeNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){RefreshLocalWeb();}];
+            RefreshLocalWeb();
         });
     }
 }
