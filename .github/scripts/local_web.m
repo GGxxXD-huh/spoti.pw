@@ -149,7 +149,7 @@ static void Reply(int fd, int status, NSString *type, NSData *body) {
     }
 }
 
-static void Handle(int fd) {
+static void LocalWebHandle(int fd) {
     @autoreleasepool {
         struct timeval timeout = {3,0}; setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
         int noSigPipe=1; setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&noSigPipe,sizeof(noSigPipe));
@@ -241,7 +241,7 @@ __attribute__((constructor)) static void StartLocalWeb(void) {
         }
         dispatch_queue_t q=dispatch_queue_create("pw.chroma.localweb",DISPATCH_QUEUE_SERIAL);
         listener=dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,fd,0,q);
-        dispatch_source_set_event_handler(listener,^{ int client=accept(fd,NULL,NULL);if(client>=0)dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{Handle(client);}); });
+        dispatch_source_set_event_handler(listener,^{ int client=accept(fd,NULL,NULL);if(client>=0)dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{LocalWebHandle(client);}); });
         dispatch_source_set_cancel_handler(listener,^{close(fd);});dispatch_resume(listener);
         dispatch_async(dispatch_get_main_queue(),^{
             Class cls=NSClassFromString(@"SPTEsperantoPlayer"); SEL selector=NSSelectorFromString(@"state");
