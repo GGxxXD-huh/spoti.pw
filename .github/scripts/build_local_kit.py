@@ -133,6 +133,17 @@ def main():
               kit/'files/Frameworks/spotifyglass.dylib',
               kit/'files/PlugIns/SpotifyGlassLiveActivity.appex']
     inputs.extend(kit/'files'/name for name in manifest.get('addons', []))
+    if manifest.get('localWeb'):
+        local_web = work/'ChromaLocalWeb.dylib'
+        html = Path('.github/scripts/local_web.html').read_bytes()
+        (work/'local_web_page.h').write_text('static const unsigned char kWebPage[] = {'+
+                                             ','.join(str(b) for b in html)+'};\n'+
+                                             f'static const unsigned long kWebPageLength = {len(html)};\n')
+        run('xcrun', '--sdk', 'iphoneos', 'clang', '-arch', 'arm64', '-miphoneos-version-min=16.1',
+            '-dynamiclib', '-fobjc-arc', '-fmodules', '-I', work, '-Wl,-install_name,@rpath/ChromaLocalWeb.dylib',
+            '-framework', 'Foundation', '-framework', 'UIKit', '-framework', 'MediaPlayer', '-framework', 'Security',
+            '.github/scripts/local_web.m', '-o', local_web)
+        inputs.append(local_web)
     run('cyan', '-i', ipa, '-o', output, '-f', *inputs, '-l', overrides, '-w', '-s', '--overwrite')
     staging = work/'staging'
     with zipfile.ZipFile(output) as archive:
@@ -201,6 +212,9 @@ def main():
                      'EeveeSpotify.bundle/Info.plist'):
             if not (app/name).is_file():
                 raise ValueError('Missing Eevee component: '+name)
+    if manifest.get('localWeb') and ('@rpath/ChromaLocalWeb.dylib' not in loads or
+                                    not (app/'Frameworks/ChromaLocalWeb.dylib').is_file()):
+        raise ValueError('Local Web Player was not loaded into the main executable')
     actual_dylib = (app/'Frameworks/spotifyglass.dylib').read_bytes()
     expected_dylib = (kit/'files/Frameworks/spotifyglass.dylib').read_bytes()
     if text_bytes(actual_dylib) != text_bytes(expected_dylib):
@@ -219,6 +233,7 @@ def main():
                'app_intents_added': len(additions['actions']), 'patch_preserved': True,
                'patch_variant': variant, 'full_text_preserved': True,
                'addons_included': manifest.get('addons', []),
+               'local_web_included': bool(manifest.get('localWeb')),
                'ipa_sha256': hashlib.sha256(result).hexdigest(), 'ipa_size': len(result),
                'signing': 'fakesigned; ordinary sideloading requires signing with an installation certificate',
                'runtime_tested_on_ios': False}

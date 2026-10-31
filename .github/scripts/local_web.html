@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Chroma Local</title>
+  <style>
+    *{box-sizing:border-box}html,body{height:100%;margin:0}body{overflow:hidden;background:#111218;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    .backdrop{position:fixed;inset:-22%;overflow:hidden;background:#171820;z-index:-2;pointer-events:none}
+    .backdrop img{position:absolute;width:75%;height:90%;object-fit:cover;filter:blur(80px) saturate(1.6) brightness(.68);opacity:.8;animation:drift 24s ease-in-out infinite alternate}
+    .backdrop img:nth-child(1){left:-7%;top:-20%}.backdrop img:nth-child(2){right:-8%;bottom:-22%;animation-delay:-12s;animation-direction:alternate-reverse}
+    .veil{position:fixed;inset:0;z-index:-1;background:linear-gradient(115deg,rgba(10,10,15,.26),rgba(12,12,18,.56)),radial-gradient(ellipse at center,transparent 15%,rgba(0,0,0,.28))}
+    @keyframes drift{0%{transform:translate(-4%,-3%) scale(1.12) rotate(-5deg)}50%{transform:translate(5%,4%) scale(1.35) rotate(5deg)}100%{transform:translate(-2%,7%) scale(1.18) rotate(-2deg)}}
+    .shell{height:100dvh;display:grid;grid-template-columns:minmax(300px,42%) minmax(300px,1fr);gap:clamp(42px,7vw,110px);align-items:center;max-width:1600px;margin:auto;padding:clamp(32px,6vw,100px)}
+    .player{width:100%;max-width:510px;justify-self:center}.cover{width:100%;aspect-ratio:1;border-radius:12px;background:rgba(255,255,255,.09);box-shadow:0 28px 90px #0007;object-fit:cover}
+    .details{display:flex;align-items:start;justify-content:space-between;margin-top:clamp(20px,3vw,36px);gap:12px}h1{font-size:clamp(22px,2.3vw,32px);line-height:1.15;letter-spacing:-.025em;margin:0 0 6px;font-weight:700}.artist{color:#ffffffa8;font-size:clamp(16px,1.5vw,20px);margin:0}.status{font-size:12px;white-space:nowrap;color:#ffffffa3;margin:5px 0 0}
+    .seek{margin-top:28px;display:block;width:100%;height:5px;accent-color:#fff;cursor:pointer}.times{display:flex;justify-content:space-between;color:#ffffff8c;font-size:12px;font-variant-numeric:tabular-nums;margin-top:7px}
+    .controls{display:flex;justify-content:center;align-items:center;gap:clamp(30px,4vw,60px);margin-top:30px}.controls button{border:0;background:transparent;color:white;cursor:pointer;padding:8px;font-size:23px;line-height:1}.controls .play{font-size:32px}.controls button:active{opacity:.6}.hint{font-size:12px;color:#ffffff75;margin-top:24px;text-align:center}
+    .lyrics{height:100%;overflow:auto;scrollbar-width:none;mask-image:linear-gradient(transparent 0%,#000 12%,#000 82%,transparent 100%);-webkit-mask-image:linear-gradient(transparent 0%,#000 12%,#000 82%,transparent 100%);padding:35vh 0;overscroll-behavior:contain}.lyrics::-webkit-scrollbar{display:none}
+    .line{font-size:clamp(25px,3.2vw,50px);line-height:1.24;letter-spacing:-.025em;font-weight:720;margin:0 0 .8em;transform-origin:left center;opacity:.4;filter:blur(.45px);transition:opacity .45s,filter .45s,transform .45s}.line.current{opacity:1;filter:none;transform:scale(1.02)}.line.past{opacity:.65;filter:none}
+    .word{display:inline-block;color:#ffffff75;white-space:pre-wrap}.word.timed{color:transparent;background:linear-gradient(90deg,#fff 0%,#fff var(--fill,0%),#ffffff75 var(--fill,0%),#ffffff75 100%);background-clip:text;-webkit-background-clip:text}
+    .empty{color:#ffffffa8;font-size:20px;font-weight:500;line-height:1.4}.empty small{display:block;margin-top:12px;font-size:14px;font-weight:400}
+    @media(max-width:720px){body{overflow:auto}.shell{height:auto;min-height:100dvh;display:block;padding:8vh 9vw}.player{max-width:390px}.lyrics{height:55vh;margin-top:48px;padding:15vh 0}.line{font-size:clamp(25px,7vw,38px)}}
+    @media(prefers-reduced-motion:reduce){.backdrop img{animation:none}.line{transition:none}}
+  </style>
+</head>
+<body>
+  <div class="backdrop"><img id="ambientA" alt=""><img id="ambientB" alt=""></div><div class="veil"></div>
+  <main class="shell">
+    <section class="player">
+      <img class="cover" id="cover" alt="Album cover">
+      <div class="details"><div><h1 id="title">Waiting for iPhone</h1><p class="artist" id="artist"></p></div><p class="status" id="status">Connecting…</p></div>
+      <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Playback position">
+      <div class="times"><span id="elapsed">0:00</span><span id="remaining">−0:00</span></div>
+      <div class="controls"><button id="previous" aria-label="Previous track">◀◀</button><button class="play" id="play" aria-label="Play or pause">▶</button><button id="next" aria-label="Next track">▶▶</button></div>
+      <div class="hint">Audio plays on your iPhone</div>
+    </section>
+    <section class="lyrics" id="lyrics" aria-label="Lyrics"><div class="empty">Waiting for iPhone</div></section>
+  </main>
+  <script>
+  (() => {
+    'use strict';
+    const base = location.pathname.replace(/\/$/, '');
+    const $ = id => document.getElementById(id);
+    let snapshot = null, receivedAt = 0, trackKey = '', lyricKey = '', lines = [], activeLine = -2, seeking = false;
+    const time = value => { const n = Math.max(0, Math.floor(value || 0)); return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`; };
+    async function command(action) {
+      try { const r = await fetch(`${base}/control/${action}`, {method:'POST', cache:'no-store'}); if (!r.ok) throw new Error(); }
+      catch (_) { $('status').textContent = 'Control unavailable'; }
+    }
+    $('previous').onclick = () => command('previous');
+    $('play').onclick = () => command('toggle');
+    $('next').onclick = () => command('next');
+    $('seek').addEventListener('pointerdown', () => { seeking = true; });
+    $('seek').addEventListener('change', () => { if (snapshot && snapshot.duration) command(`seek/${(Number($('seek').value) * snapshot.duration / 1000).toFixed(2)}`); seeking = false; });
+    $('seek').addEventListener('pointercancel', () => { seeking = false; });
+    function makeLyrics(lyrics) {
+      const box = $('lyrics'); box.replaceChildren(); lines = []; activeLine = -2;
+      if (!lyrics.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'Lyrics are not cached for this song.'; const note = document.createElement('small'); note.textContent = 'Open the lyrics on your iPhone first.'; empty.append(note); box.append(empty); return; }
+      for (const line of lyrics) {
+        const row = document.createElement('div'); row.className = 'line'; const words = [];
+        line.words.forEach((word, index) => {
+          const span = document.createElement('span'); span.className = 'word timed'; span.textContent = word.text + (index + 1 < line.words.length ? ' ' : ''); row.append(span); words.push({node:span,start:word.start,end:word.end});
+        });
+        box.append(row); lines.push({node:row,start:line.time,end:line.end,words});
+      }
+    }
+    async function refresh() {
+      try {
+        const response = await fetch(`${base}/state`, {cache:'no-store'}); if (!response.ok) throw new Error();
+        const data = await response.json(); snapshot = data; receivedAt = performance.now();
+        $('title').textContent = data.title; $('artist').textContent = data.artist; $('status').textContent = data.playing ? 'Playing' : 'Paused'; $('play').textContent = data.playing ? '❚❚' : '▶';
+        const nextTrack = data.trackID || `${data.title}|${data.artist}`;
+        if (nextTrack !== trackKey) { trackKey = nextTrack; const image = `${base}/art?${Date.now()}`; $('cover').src = image; $('ambientA').src = image; $('ambientB').src = image; }
+        const nextLyrics = nextTrack + '|' + JSON.stringify(data.lyrics);
+        if (nextLyrics !== lyricKey) { lyricKey = nextLyrics; makeLyrics(data.lyrics); }
+      } catch (_) { $('status').textContent = 'Waiting for iPhone'; }
+    }
+    function animate(now) {
+      if (snapshot) {
+        const elapsed = Math.min(snapshot.duration || Infinity, Math.max(0, snapshot.position + (snapshot.playing ? (now - receivedAt) / 1000 : 0)));
+        $('elapsed').textContent = time(elapsed); $('remaining').textContent = '−' + time(Math.max(0, snapshot.duration - elapsed));
+        if (!seeking && snapshot.duration) $('seek').value = String(Math.min(1000, elapsed * 1000 / snapshot.duration));
+        const ms = elapsed * 1000; let current = -1;
+        for (let i = 0; i < lines.length; i++) if (lines[i].start <= ms) current = i; else break;
+        if (current !== activeLine) {
+          activeLine = current;
+          lines.forEach((line,i) => {
+            line.node.className = 'line' + (i === current ? ' current' : i < current ? ' past' : '');
+            for (const word of line.words) word.node.style.setProperty('--fill',i < current ? '100%' : '0%');
+          });
+          if (current >= 0) lines[current].node.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+        if (current >= 0) for (const word of lines[current].words) {
+          const duration = Math.max(1, word.end - word.start);
+          word.node.style.setProperty('--fill', `${Math.max(0,Math.min(100,100*(ms-word.start)/duration))}%`);
+        }
+      }
+      requestAnimationFrame(animate);
+    }
+    refresh(); setInterval(refresh, 1500); requestAnimationFrame(animate);
+  })();
+  </script>
+</body>
+</html>
