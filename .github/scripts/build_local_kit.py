@@ -50,6 +50,19 @@ def decrypted(data):
         raise ValueError('Main Spotify executable is still encrypted')
     return found
 
+def text_bytes(data):
+    for command, payload in load_commands(data):
+        if command != 0x19:
+            continue
+        count = struct.unpack_from('<I', payload, 64)[0]
+        for index in range(count):
+            section = payload[72+80*index:72+80*(index+1)]
+            if section[:16].split(b'\0')[0] == b'__text':
+                size = struct.unpack_from('<Q', section, 40)[0]
+                offset = struct.unpack_from('<I', section, 48)[0]
+                return data[offset:offset+size]
+    raise ValueError('Mach-O __text section was not found')
+
 def strings_replaced(value, replacements):
     if isinstance(value, str):
         for old, new in replacements.items():
@@ -90,6 +103,15 @@ def main():
         encryption = decrypted(archive.read(app_prefix+host['CFBundleExecutable']))
     if host['CFBundleShortVersionString'] not in manifest['spotifyVersions']:
         raise ValueError('Source Spotify version is not supported by this kit')
+    saved_frameworks = work/'source-frameworks'
+    with zipfile.ZipFile(ipa) as archive:
+        for framework in ('Orion.framework', 'CydiaSubstrate.framework'):
+            prefix = app_prefix+'Frameworks/'+framework+'/'
+            for member in archive.namelist():
+                if member.startswith(prefix) and not member.endswith('/'):
+                    target = saved_frameworks/framework/member[len(prefix):]
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(member))
     replacements = {'HOST_BUNDLE_ID': host['CFBundleIdentifier'],
                     'HOST_SHORT_VERSION': host['CFBundleShortVersionString'],
                     'HOST_VERSION': host['CFBundleVersion']}
@@ -116,6 +138,18 @@ def main():
     with zipfile.ZipFile(output) as archive:
         archive.extractall(staging)
     app = staging/'Payload'/apps[0]
+    for framework in ('Orion.framework', 'CydiaSubstrate.framework'):
+        source = saved_frameworks/framework
+        if source.exists():
+            target = app/'Frameworks'/framework
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            run('ldid', '-S', target/framework.removesuffix('.framework'))
+    for name in ('SpotifyGlassAutoMix.dylib', 'SpotifyGlassAutoMix26.dylib'):
+        source = kit/'files/Frameworks'/name
+        if source.exists():
+            target = app/'Frameworks'/name
+            shutil.copy2(source, target)
+            run('ldid', '-S', target)
     for name in manifest.get('restoreFrameworks', []):
         target = app/'Frameworks'/name
         shutil.copytree(kit/'files/Frameworks'/name, target, dirs_exist_ok=True)
@@ -159,9 +193,17 @@ def main():
     for name in manifest['load'][0]['dylibs']:
         if name not in loads:
             raise ValueError('Missing main executable dependency: ' + name)
+    if manifest.get('requireEevee'):
+        if '@rpath/EeveeSpotify.dylib' not in loads:
+            raise ValueError('Source IPA does not load EeveeSpotify')
+        for name in ('Frameworks/EeveeSpotify.dylib', 'Frameworks/EeveeSwiftProtobuf.framework/EeveeSwiftProtobuf',
+                     'Frameworks/Orion.framework/Orion', 'Frameworks/CydiaSubstrate.framework/CydiaSubstrate',
+                     'EeveeSpotify.bundle/Info.plist'):
+            if not (app/name).is_file():
+                raise ValueError('Missing Eevee component: '+name)
     actual_dylib = (app/'Frameworks/spotifyglass.dylib').read_bytes()
     expected_dylib = (kit/'files/Frameworks/spotifyglass.dylib').read_bytes()
-    if actual_dylib[0x4000:0x311488] != expected_dylib[0x4000:0x311488]:
+    if text_bytes(actual_dylib) != text_bytes(expected_dylib):
         raise ValueError('Local patch was not preserved during injection')
     extension = plistlib.loads((app/'PlugIns/SpotifyGlassLiveActivity.appex/Info.plist').read_bytes())
     if extension['CFBundleIdentifier'] != host['CFBundleIdentifier']+'.liveactivity':
@@ -175,7 +217,7 @@ def main():
                'main_cryptid': encryption, 'main_loads_verified': manifest['load'][0]['dylibs'],
                'live_activity_included': True, 'widget_patched': widget.exists(),
                'app_intents_added': len(additions['actions']), 'patch_preserved': True,
-               'patch_variant': 'v3', 'full_text_preserved': True,
+               'patch_variant': variant, 'full_text_preserved': True,
                'addons_included': manifest.get('addons', []),
                'ipa_sha256': hashlib.sha256(result).hexdigest(), 'ipa_size': len(result),
                'signing': 'fakesigned; ordinary sideloading requires signing with an installation certificate',
