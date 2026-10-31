@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <string.h>
 
 // Spotify 9.1.90; selectors are checked before use. Access is protected by a
@@ -42,6 +43,7 @@ static void InstallPlayerHooks(void) {
 }
 static NSString *token;
 static dispatch_source_t listener;
+static atomic_bool refreshScheduled = false;
 
 static id CaptureState(id self, SEL cmd) {
     player = self;
@@ -278,6 +280,14 @@ static void RefreshLocalWeb(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,8*NSEC_PER_SEC),dispatch_get_main_queue(),^{ShowLink(5);});
 }
 
+static void ScheduleLocalWebRefresh(void) {
+    if (atomic_exchange(&refreshScheduled, true)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        atomic_store(&refreshScheduled, false);
+        RefreshLocalWeb();
+    });
+}
+
 __attribute__((constructor)) static void StartLocalWeb(void) {
     @autoreleasepool {
         NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
@@ -293,8 +303,8 @@ __attribute__((constructor)) static void StartLocalWeb(void) {
             InstallPlayerHooks();
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{InstallPlayerHooks();});
             NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
-            [center addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){RefreshLocalWeb();}];
-            [center addObserverForName:@"SGWebPlayerDidChangeNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){RefreshLocalWeb();}];
+            [center addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil usingBlock:^(__unused NSNotification *note){ScheduleLocalWebRefresh();}];
+            [center addObserverForName:@"SGWebPlayerDidChangeNotification" object:nil queue:nil usingBlock:^(__unused NSNotification *note){ScheduleLocalWebRefresh();}];
             RefreshLocalWeb();
         });
     }
