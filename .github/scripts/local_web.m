@@ -19,7 +19,27 @@
 static const uint16_t kPort = 8765;
 static NSString *const kTokenKey = @"chroma.localweb.token";
 static __weak id player;
+static id CaptureState(id self, SEL cmd);
 static id (*originalState)(id, SEL);
+static void (*originalAddObserver)(id, SEL, id);
+static BOOL stateHookInstalled, observerHookInstalled;
+
+static void CaptureObserver(id self, SEL cmd, id observer) {
+    player = self;
+    originalAddObserver(self, cmd, observer);
+}
+static void InstallPlayerHooks(void) {
+    Class cls=NSClassFromString(@"SPTEsperantoPlayer");
+    if (!cls) return;
+    if (!stateHookInstalled) {
+        SEL sel=NSSelectorFromString(@"state"); Method method=class_getInstanceMethod(cls,sel);
+        if (method) { originalState=(id(*)(id,SEL))method_getImplementation(method); class_replaceMethod(cls,sel,(IMP)CaptureState,method_getTypeEncoding(method)); stateHookInstalled=YES; }
+    }
+    if (!observerHookInstalled) {
+        SEL sel=NSSelectorFromString(@"addPlayerObserver:"); Method method=class_getInstanceMethod(cls,sel);
+        if (method) { originalAddObserver=(void(*)(id,SEL,id))method_getImplementation(method); class_replaceMethod(cls,sel,(IMP)CaptureObserver,method_getTypeEncoding(method)); observerHookInstalled=YES; }
+    }
+}
 static NSString *token;
 static dispatch_source_t listener;
 
@@ -105,7 +125,8 @@ static NSDictionary *Snapshot(void) {
     NSString *trackID = TrackID(track,info);
     return @{@"title":title ?: @"Waiting for Spotify", @"artist":artist ?: @"", @"trackID":trackID ?: @"",
              @"duration":@(MAX(0,duration)), @"position":@(MAX(0,position)),
-             @"playing":@(rate > 0), @"lyrics":CachedLyrics(trackID)};
+             @"playing":@(rate > 0), @"lyrics":CachedLyrics(trackID),
+             @"controlReady":@(player != nil), @"playerHooks":@[@(stateHookInstalled), @(observerHookInstalled)]};
 }
 
 static NSData *Art(void) {
@@ -127,6 +148,8 @@ static BOOL Command(NSString *action) {
     } else if ([action isEqualToString:@"next"]) {
         sel = NSSelectorFromString(@"skipToNextTrack");
         if ([p respondsToSelector:sel]) { ((void(*)(id,SEL))objc_msgSend)(p,sel); return YES; }
+        sel = NSSelectorFromString(@"skipToNextTrackWithOptions:");
+        if ([p respondsToSelector:sel]) { ((id(*)(id,SEL,id))objc_msgSend)(p,sel,nil); return YES; }
     } else if ([action isEqualToString:@"previous"]) {
         sel = NSSelectorFromString(@"skipToPreviousTrackWithOptions:");
         if ([p respondsToSelector:sel]) { ((id(*)(id,SEL,id))objc_msgSend)(p,sel,nil); return YES; }
@@ -265,10 +288,10 @@ __attribute__((constructor)) static void StartLocalWeb(void) {
             saved=hex; [defaults setObject:saved forKey:kTokenKey];
         }
         token=[saved copy];
+        InstallPlayerHooks();
         dispatch_async(dispatch_get_main_queue(),^{
-            Class cls=NSClassFromString(@"SPTEsperantoPlayer"); SEL selector=NSSelectorFromString(@"state");
-            Method method=class_getInstanceMethod(cls,selector);
-            if(method){originalState=(id(*)(id,SEL))method_getImplementation(method);class_replaceMethod(cls,selector,(IMP)CaptureState,method_getTypeEncoding(method));}
+            InstallPlayerHooks();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{InstallPlayerHooks();});
             NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
             [center addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){RefreshLocalWeb();}];
             [center addObserverForName:@"SGWebPlayerDidChangeNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){RefreshLocalWeb();}];
