@@ -45,6 +45,49 @@ static NSString *token;
 static dispatch_source_t listener;
 static atomic_bool refreshScheduled = false;
 
+// The kit's Ambient reader supports an ordinary local file via devPath.
+// Map its catalog filenames to the replacement recordings bundled with the app.
+static id (*originalAmbientDevPath)(id, SEL);
+static BOOL (*originalAmbientDownloaded)(id, SEL, id);
+static BOOL ambientHooksInstalled;
+
+static NSString *LocalAmbientPath(id file) {
+    static NSDictionary *mapping;
+    static NSString *directory;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        directory = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"AmbientLocal"];
+        NSData *data = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"map.json"]];
+        id parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        if ([parsed isKindOfClass:NSDictionary.class]) mapping = parsed;
+    });
+    SEL sel = NSSelectorFromString(@"name");
+    NSString *name = file && [file respondsToSelector:sel] ? ((id(*)(id,SEL))objc_msgSend)(file,sel) : nil;
+    NSString *relative = [name isKindOfClass:NSString.class] ? mapping[name] : nil;
+    if (![relative isKindOfClass:NSString.class] || [relative containsString:@"/"] || [relative containsString:@".."]) return nil;
+    NSString *path = [directory stringByAppendingPathComponent:relative];
+    return [NSFileManager.defaultManager fileExistsAtPath:path] ? path : nil;
+}
+
+static id AmbientDevPath(id self, SEL cmd) {
+    return LocalAmbientPath(self) ?: originalAmbientDevPath(self,cmd);
+}
+static BOOL AmbientDownloaded(id self, SEL cmd, id file) {
+    return LocalAmbientPath(file) != nil || originalAmbientDownloaded(self,cmd,file);
+}
+static void InstallAmbientHooks(void) {
+    if (ambientHooksInstalled) return;
+    Class file=NSClassFromString(@"SGAmbientFile"), library=NSClassFromString(@"SGAmbientLibrary");
+    SEL path=NSSelectorFromString(@"devPath"), downloaded=NSSelectorFromString(@"isDownloaded:");
+    Method p=class_getInstanceMethod(file,path), d=class_getInstanceMethod(library,downloaded);
+    if (!p || !d) return;
+    originalAmbientDevPath=(id(*)(id,SEL))method_getImplementation(p);
+    originalAmbientDownloaded=(BOOL(*)(id,SEL,id))method_getImplementation(d);
+    class_replaceMethod(file,path,(IMP)AmbientDevPath,method_getTypeEncoding(p));
+    class_replaceMethod(library,downloaded,(IMP)AmbientDownloaded,method_getTypeEncoding(d));
+    ambientHooksInstalled=YES;
+}
+
 static id CaptureState(id self, SEL cmd) {
     player = self;
     return originalState(self, cmd);
@@ -299,9 +342,11 @@ __attribute__((constructor)) static void StartLocalWeb(void) {
         }
         token=[saved copy];
         InstallPlayerHooks();
+        InstallAmbientHooks();
         dispatch_async(dispatch_get_main_queue(),^{
             InstallPlayerHooks();
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{InstallPlayerHooks();});
+            InstallAmbientHooks();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{InstallPlayerHooks(); InstallAmbientHooks();});
             NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
             [center addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil usingBlock:^(__unused NSNotification *note){ScheduleLocalWebRefresh();}];
             [center addObserverForName:@"SGWebPlayerDidChangeNotification" object:nil queue:nil usingBlock:^(__unused NSNotification *note){ScheduleLocalWebRefresh();}];

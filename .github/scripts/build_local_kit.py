@@ -149,6 +149,11 @@ def main():
     with zipfile.ZipFile(output) as archive:
         archive.extractall(staging)
     app = staging/'Payload'/apps[0]
+    ambient_local = kit/'ambient-local'
+    if ambient_local.exists():
+        if not (ambient_local/'map.json').is_file():
+            raise ValueError('Local Ambient map is missing')
+        shutil.copytree(ambient_local, app/'AmbientLocal', dirs_exist_ok=True)
     for framework in ('Orion.framework', 'CydiaSubstrate.framework'):
         source = saved_frameworks/framework
         if source.exists():
