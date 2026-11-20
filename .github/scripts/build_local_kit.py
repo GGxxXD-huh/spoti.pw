@@ -209,6 +209,11 @@ def main():
     for name in manifest['load'][0]['dylibs']:
         if name not in loads:
             raise ValueError('Missing main executable dependency: ' + name)
+    if manifest.get('forbidEevee'):
+        if any('eevee' in name.lower() for name in loads):
+            raise ValueError('An Eevee dependency remains in the main executable')
+        if any('eevee' in str(path.relative_to(app)).lower() for path in app.rglob('*')):
+            raise ValueError('An Eevee component remains in the assembled app')
     if manifest.get('requireEevee'):
         if '@rpath/EeveeSpotify.dylib' not in loads:
             raise ValueError('Source IPA does not load EeveeSpotify')
